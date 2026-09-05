@@ -1,0 +1,10 @@
+{
+  "timestamp": 1725552000123,
+  "latitude": 18.52041,
+  "longitude": 73.85672,
+  "speed": 11.1,
+  "heading": 87.5,
+  "navigation_mode": "GNSS_INS",
+  "gnss_status": "AVAILABLE",
+  "position_error": null
+}

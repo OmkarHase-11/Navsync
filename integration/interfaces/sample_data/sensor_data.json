@@ -1,0 +1,16 @@
+{
+  "timestamp": 1725552000123,
+  "accelerometer_x": 0.12,
+  "accelerometer_y": 0.35,
+  "accelerometer_z": 9.78,
+  "gyroscope_x": 0.002,
+  "gyroscope_y": -0.003,
+  "gyroscope_z": 0.015,
+  "magnetometer_x": 21.4,
+  "magnetometer_y": -5.8,
+  "magnetometer_z": -38.2,
+  "latitude": 18.5204,
+  "longitude": 73.8567,
+  "gnss_accuracy": 6.5,
+  "gnss_available": true
+}
