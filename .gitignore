@@ -1,2 +1,5 @@
 # Locally generated Python model artifacts
 *.joblib
+
+# Local evaluation reports and per-window predictions
+evaluation/results/
