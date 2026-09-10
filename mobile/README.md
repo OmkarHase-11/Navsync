@@ -2,21 +2,27 @@
 
 NavSync mobile client for consumer navigation with inertial dead reckoning fallback.
 
-## Google Maps iOS Setup
+## OpenStreetMap map layer (Issue #12)
 
-To enable Google Maps road tiles on iOS:
+The existing Pune simulation uses flutter_map and latlong2 with standard HTTPS
+OpenStreetMap street tiles. No map API key is needed. Location and IMU collection
+remain separate and unchanged. The tile user-agent identifies NavSync as com.navsync.app (an application identifier,
+not a change to platform bundle IDs). flutter_map's SimpleAttributionWidget remains
+visible above the trip card and opens the OSM copyright page using url_launcher.
+Follow https://operations.osmfoundation.org/policies/tiles/; this implementation
+adds no bulk downloads or offline prefetching.
 
-1. Copy the secrets template to create your local configuration:
-   ```bash
-   cp ios/Flutter/Secrets.xcconfig.example ios/Flutter/Secrets.xcconfig
-   ```
-2. Open `ios/Flutter/Secrets.xcconfig` and set your Google Cloud Maps API key:
-   ```properties
-   GOOGLE_MAPS_API_KEY=your_actual_key_here
-   ```
-3. **Never commit `Secrets.xcconfig`**. It is ignored in `.gitignore` to prevent credential exposure.
-4. Restrict the API key in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) to the iOS application bundle identifier (`com.navsync.app`).
-5. Ensure the **Maps SDK for iOS** is enabled and billing is activated in your Google Cloud project.
+Vehicle heading, destination tooltip, remaining/travelled routes, dashed DR trail,
+auto-follow and recenter are retained. Camera rotation uses negative heading for
+heading-up; the vehicle arrow rotates by heading in radians within the map.
+Only gesture-originated camera changes disable follow. flutter_map is a 2D map:
+the previous perspective tilt and hybrid satellite imagery are replaced by a
+normal street map. The constructor and simulation behavior remain unchanged.
+
+On macOS, run `flutter pub get` and `cd ios && pod install` before an iOS build.
+The existing CocoaPods lockfile is stale and must be regenerated there; CocoaPods
+is not available in this Windows workspace. Local ignored Secrets.xcconfig files
+are no longer included and need not be edited or disclosed.
 
 ## Sensor & Location Dependencies (Issue #11)
 

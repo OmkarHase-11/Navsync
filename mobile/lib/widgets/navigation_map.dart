@@ -1,18 +1,15 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart' hide NavigationMode;
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:mobile/models/navigation_output.dart';
 import 'package:mobile/models/navigation_state.dart';
 import 'package:mobile/theme/navsync_theme.dart';
 
-/// Master Google Maps Navigation Widget
-///
-/// Features:
-/// - Real Google Maps engine with customized dark navigation styling
-/// - Active navigation route polyline & travelled path de-emphasis
-/// - Real-time vehicle location marker rotating according to heading
-/// - Dead Reckoning estimated trajectory breadcrumbs
-/// - Camera auto-follow with smooth perspective tilt
-/// - Interactive pan/zoom with floating Re-Center button
+/// OpenStreetMap navigation view for the existing simulated route.
 class NavigationMap extends StatefulWidget {
   final NavigationState state;
   final bool isAutoTracking;
@@ -32,50 +29,32 @@ class NavigationMap extends StatefulWidget {
 }
 
 class _NavigationMapState extends State<NavigationMap> {
-  GoogleMapController? _mapController;
-  BitmapDescriptor? _vehicleIcon;
-  BitmapDescriptor? _destinationIcon;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCustomMarkers();
-  }
-
-  Future<void> _loadCustomMarkers() async {
-    // Standard high-visibility navigation markers
-    _vehicleIcon = BitmapDescriptor.defaultMarkerWithHue(
-      BitmapDescriptor.hueOrange,
-    );
-    _destinationIcon = BitmapDescriptor.defaultMarkerWithHue(
-      BitmapDescriptor.hueRed,
-    );
-    if (mounted) setState(() {});
-  }
+  final MapController _mapController = MapController();
+  bool _mapReady = false;
 
   @override
   void didUpdateWidget(covariant NavigationMap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.isAutoTracking && _mapController != null) {
+    if (widget.isAutoTracking && _mapReady) {
       _updateCameraPosition();
     }
   }
 
   void _updateCameraPosition() {
     final output = widget.state.navigationOutput;
-    final pos = LatLng(output.latitude, output.longitude);
-    final heading = output.heading;
-
-    _mapController?.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: pos,
-          zoom: widget.state.navigationActive ? 17.5 : 15.0,
-          tilt: widget.state.navigationActive ? 40.0 : 0.0,
-          bearing: widget.state.navigationActive ? heading : 0.0,
-        ),
-      ),
+    // flutter_map rotates the map clockwise, so heading-up uses -heading.
+    // This is a 2D street map; perspective tilt is not supported.
+    _mapController.moveAndRotate(
+      LatLng(output.latitude, output.longitude),
+      widget.state.navigationActive ? 17.5 : 15.0,
+      widget.state.navigationActive ? -output.heading : 0.0,
     );
+  }
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
   }
 
   @override
@@ -86,7 +65,7 @@ class _NavigationMapState extends State<NavigationMap> {
         output.navigationMode == NavigationMode.deadReckoning;
 
     // 1. Build Polylines
-    final Set<Polyline> polylines = {};
+    final polylines = <Polyline>[];
 
     // Upcoming route (Active)
     final remainingPoints = <LatLng>[curPos];
@@ -101,17 +80,13 @@ class _NavigationMapState extends State<NavigationMap> {
     if (remainingPoints.length > 1) {
       polylines.add(
         Polyline(
-          polylineId: const PolylineId('active_route'),
           points: remainingPoints,
           color: isDeadReckoning
               ? NavSyncTheme.warning
               : const Color(
                   0xFF1E88E5,
                 ), // Blue in GNSS, Orange in Dead Reckoning
-          width: 6,
-          jointType: JointType.round,
-          endCap: Cap.roundCap,
-          startCap: Cap.roundCap,
+          strokeWidth: 6,
         ),
       );
     }
@@ -127,10 +102,9 @@ class _NavigationMapState extends State<NavigationMap> {
 
       polylines.add(
         Polyline(
-          polylineId: const PolylineId('travelled_route'),
           points: travelledPoints,
           color: NavSyncTheme.secondaryText.withValues(alpha: 0.5),
-          width: 5,
+          strokeWidth: 5,
         ),
       );
     }
@@ -139,67 +113,95 @@ class _NavigationMapState extends State<NavigationMap> {
     if (isDeadReckoning && widget.state.deadReckoningBreadcrumbs.length > 1) {
       polylines.add(
         Polyline(
-          polylineId: const PolylineId('dead_reckoning_trail'),
           points: widget.state.deadReckoningBreadcrumbs,
           color: NavSyncTheme.idrBlueLight,
-          width: 4,
-          patterns: [PatternItem.dash(12), PatternItem.gap(6)],
+          strokeWidth: 4,
+          pattern: StrokePattern.dashed(segments: [12, 6]),
         ),
       );
     }
 
-    // 2. Build Markers
-    final Set<Marker> markers = {
-      // Vehicle Location Marker
-      Marker(
-        markerId: const MarkerId('vehicle_marker'),
-        position: curPos,
-        rotation: output.heading,
-        anchor: const Offset(0.5, 0.5),
-        flat: true,
-        icon: _vehicleIcon ?? BitmapDescriptor.defaultMarker,
-        infoWindow: InfoWindow(
-          title: isDeadReckoning
-              ? 'Estimated Position (Dead Reckoning)'
-              : 'Current Position',
-        ),
-      ),
-
-      // Destination Marker
-      Marker(
-        markerId: const MarkerId('destination_marker'),
-        position: NavigationState.routeWaypoints.last.position,
-        icon: _destinationIcon ?? BitmapDescriptor.defaultMarker,
-        infoWindow: InfoWindow(
-          title: widget.state.destinationName,
-          snippet: 'Destination',
-        ),
-      ),
-    };
-
     return SizedBox.expand(
-      child: GoogleMap(
-        initialCameraPosition: CameraPosition(
-          target: curPos,
-          zoom: 16.0,
-          tilt: widget.state.navigationActive ? 40.0 : 0.0,
-          bearing: widget.state.navigationActive ? output.heading : 0.0,
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: curPos,
+          initialZoom: widget.state.navigationActive ? 17.5 : 15.0,
+          initialRotation: widget.state.navigationActive
+              ? -output.heading
+              : 0.0,
+          onMapReady: () {
+            _mapReady = true;
+          },
+          onPositionChanged: (camera, hasGesture) {
+            if (hasGesture) widget.onUserPan();
+          },
         ),
-        mapType: MapType.hybrid,
-        myLocationEnabled: false,
-        myLocationButtonEnabled: false,
-        zoomControlsEnabled: false,
-        compassEnabled: true,
-        mapToolbarEnabled: false,
-        polylines: polylines,
-        markers: markers,
-        onMapCreated: (controller) {
-          _mapController = controller;
-          _updateCameraPosition();
-        },
-        onCameraMoveStarted: () {
-          widget.onUserPan();
-        },
+        children: [
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'com.navsync.app',
+          ),
+          PolylineLayer(polylines: polylines),
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: curPos,
+                width: 48,
+                height: 48,
+                alignment: Alignment.center,
+                // Rotate with the map, then apply the vehicle's true heading.
+                rotate: false,
+                child: Tooltip(
+                  message: isDeadReckoning
+                      ? 'Estimated Position (Dead Reckoning)'
+                      : 'Current Position',
+                  child: Transform.rotate(
+                    angle: output.heading * math.pi / 180,
+                    child: const Icon(
+                      Icons.navigation,
+                      size: 40,
+                      color: NavSyncTheme.warning,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 5)],
+                    ),
+                  ),
+                ),
+              ),
+              Marker(
+                point: NavigationState.routeWaypoints.last.position,
+                width: 48,
+                height: 48,
+                alignment: Alignment.topCenter,
+                rotate: true,
+                child: Tooltip(
+                  message: widget.state.destinationName,
+                  child: const Icon(
+                    Icons.location_on,
+                    size: 48,
+                    color: Colors.red,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          // Always visible above the trip card; no expandable attribution popup.
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 110),
+            child: DefaultTextStyle(
+              style: const TextStyle(color: Colors.black, fontSize: 10),
+              child: SimpleAttributionWidget(
+                backgroundColor: Colors.white,
+                alignment: Alignment.bottomLeft,
+                source: const Text('OpenStreetMap\ncontributors'),
+                onTap: () async {
+                  await launchUrl(
+                    Uri.parse('https://www.openstreetmap.org/copyright'),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
