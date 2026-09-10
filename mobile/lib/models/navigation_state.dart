@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart' hide NavigationMode;
 import 'package:latlong2/latlong.dart';
 import 'package:mobile/models/navigation_output.dart';
+import 'package:mobile/navigation/map_matching/map_matcher.dart';
+import 'package:mobile/navigation/map_matching/map_match_result.dart';
 
 /// Navigation waypoint along real urban roads
 class NavWaypoint {
@@ -26,6 +28,21 @@ class NavWaypoint {
 /// Holds trip metrics, real Pune coordinates, vehicle heading, speed,
 /// ETA calculations, GNSS status, and Dead Reckoning breadcrumb history.
 class NavigationState {
+  static final _mapMatcher = MapMatcher();
+
+  /// Optional route projection; never feeds back into raw simulation or output.
+  MapMatchResult get mapMatchResult {
+    final position = currentPosition;
+    return _mapMatcher.match(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      headingDegrees: heading,
+      route: routeWaypoints.map((waypoint) => waypoint.position).toList(),
+    );
+  }
+
+  LatLng get mapMatchedPosition => mapMatchResult.matchedPosition;
+
   bool navigationActive;
   bool simulatedGnssAvailable;
   double _speedMps = 0.0; // Internal speed in m/s (contract unit)
