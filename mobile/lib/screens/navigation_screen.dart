@@ -4,6 +4,7 @@ import 'package:flutter/material.dart' hide NavigationMode;
 import 'package:mobile/controllers/sensor_runtime_controller.dart';
 import 'package:mobile/models/navigation_output.dart';
 import 'package:mobile/models/navigation_state.dart';
+import 'package:mobile/navigation/integration/navigation_pipeline.dart';
 import 'package:mobile/theme/navsync_theme.dart';
 import 'package:mobile/widgets/navigation_drawer.dart';
 import 'package:mobile/widgets/navigation_map.dart';
@@ -20,7 +21,14 @@ import 'package:mobile/widgets/navigation_map.dart';
 class NavigationScreen extends StatefulWidget {
   final SensorRuntimeController? sensorController;
 
-  const NavigationScreen({super.key, this.sensorController});
+  /// Null preserves the demo. Supplied pipelines require a real host adapter.
+  final NavigationPipeline? navigationPipeline;
+
+  const NavigationScreen({
+    super.key,
+    this.sensorController,
+    this.navigationPipeline,
+  });
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -64,6 +72,7 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   bool _isAutoTracking = true;
   int _statusAnimationEpoch = 0;
+  int? _lastNavigationTimestamp;
 
   @override
   void initState() {
@@ -71,11 +80,14 @@ class _NavigationScreenState extends State<NavigationScreen>
     WidgetsBinding.instance.addObserver(this);
     _sensorController = widget.sensorController ?? SensorRuntimeController();
     _sensorController.addListener(_onSensorPipelineStatusChanged);
+    widget.navigationPipeline?.addListener(_onNavigationResult);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.navigationPipeline?.removeListener(_onNavigationResult);
+    widget.navigationPipeline?.stop();
     _sensorController.removeListener(_onSensorPipelineStatusChanged);
     if (widget.sensorController == null) {
       _sensorController.dispose();
@@ -218,13 +230,30 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
   }
 
+  void _onNavigationResult() {
+    if (!mounted || !_navState.navigationActive) return;
+    final pipeline = widget.navigationPipeline!;
+    final result = pipeline.latest;
+    setState(() {
+      if (result != null && result.raw.timestamp != _lastNavigationTimestamp) {
+        _navState.applyPipelineResult(result);
+        _lastNavigationTimestamp = result.raw.timestamp;
+      }
+    });
+  }
+
   void _startNavigation() {
     setState(() {
+      _lastNavigationTimestamp = null;
       _navState.start();
       _isAutoTracking = true;
     });
 
-    _sensorController.start();
+    if (widget.navigationPipeline != null) {
+      _startIntegratedSensors();
+    } else {
+      _sensorController.start();
+    }
     _showNotificationBanner(
       title: 'Sensor collection started',
       message: 'Foreground sensor pipeline active',
@@ -237,6 +266,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
 
     _simulationTimer?.cancel();
+    if (widget.navigationPipeline != null) return;
     // 20Hz update loop (50ms) for smooth vehicle progress along roads
     _simulationTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
       if (!mounted) return;
@@ -251,14 +281,25 @@ class _NavigationScreenState extends State<NavigationScreen>
     });
   }
 
+  Future<void> _startIntegratedSensors() async {
+    await widget.navigationPipeline!.start(_sensorController.sensorDataStream);
+    if (mounted &&
+        _navState.navigationActive &&
+        widget.navigationPipeline!.running) {
+      await _sensorController.start();
+    }
+  }
+
   void _stopNavigation() {
     _simulationTimer?.cancel();
     _simulationTimer = null;
     _notificationTimer?.cancel();
     _statusAnimationEpoch++;
+    widget.navigationPipeline?.stop();
     _sensorController.stop();
 
     setState(() {
+      _lastNavigationTimestamp = null;
       _navState.stop();
       _activeNotification = null;
       _isAutoTracking = true;
@@ -277,6 +318,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   }
 
   void _toggleGnssFailure() {
+    if (widget.navigationPipeline != null) return;
     setState(() {
       _navState.toggleManualGnss();
     });
@@ -304,19 +346,37 @@ class _NavigationScreenState extends State<NavigationScreen>
         fit: StackFit.expand,
         children: [
           // 1. Full-Screen OpenStreetMap Navigation View — MUST be first and fill entire screen
-          NavigationMap(
-            state: _navState,
-            isAutoTracking: _isAutoTracking,
-            onRecenter: () {
-              setState(() => _isAutoTracking = true);
-            },
-            onUserPan: () {
-              if (_isAutoTracking) {
-                setState(() => _isAutoTracking = false);
-              }
-            },
-          ),
+          if (widget.navigationPipeline != null &&
+              _navState.navigationActive &&
+              widget.navigationPipeline!.latest == null)
+            const Center(child: Text('Waiting for live navigation'))
+          else
+            NavigationMap(
+              state: _navState,
+              isAutoTracking: _isAutoTracking,
+              onRecenter: () {
+                setState(() => _isAutoTracking = true);
+              },
+              onUserPan: () {
+                if (_isAutoTracking) {
+                  setState(() => _isAutoTracking = false);
+                }
+              },
+            ),
 
+          if (widget.navigationPipeline != null && _navState.navigationActive)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 185,
+              child: Text(
+                widget.navigationPipeline!.error ?? 'Live navigation',
+                style: const TextStyle(
+                  backgroundColor: Colors.black,
+                  color: Colors.white,
+                ),
+              ),
+            ),
           // 2. Dead Reckoning Ambient Aura Halo (Visual Wow Factor - IDR Blue)
           if (isDeadReckoning && _isAutoTracking)
             Center(
@@ -674,17 +734,23 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   /// Compact top-right corner status chip sized to content
   Widget _buildNavigationStatusChip(NavigationOutput output) {
+    if (widget.navigationPipeline != null &&
+        widget.navigationPipeline!.latest == null) {
+      return const Text('WAITING FOR LIVE NAVIGATION');
+    }
     final isDeadReckoning =
         output.navigationMode == NavigationMode.deadReckoning;
 
     return Semantics(
-      label: isDeadReckoning
+      label: widget.navigationPipeline != null
+          ? (isDeadReckoning ? 'IDR active' : 'GNSS active')
+          : isDeadReckoning
           ? 'IDR active. Tap to simulate GNSS restoration'
           : 'GNSS active. Tap to simulate GNSS signal loss',
       button: true,
       child: GestureDetector(
         key: const ValueKey('navigation_status_pill'),
-        onTap: _toggleGnssFailure,
+        onTap: widget.navigationPipeline == null ? _toggleGnssFailure : null,
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 250),
@@ -863,6 +929,25 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   /// Compact, refined Active Navigation Bottom Card
   Widget _buildActiveNavigationBottomCard() {
+    if (widget.navigationPipeline != null &&
+        widget.navigationPipeline!.latest == null) {
+      return Container(
+        decoration: NavSyncTheme.floatingCard(borderRadius: 26),
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Expanded(child: Text('Waiting for navigation estimates')),
+            IconButton(
+              key: const ValueKey('stop_navigation_button'),
+              tooltip: 'Stop navigation',
+              onPressed: _stopNavigation,
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       decoration: NavSyncTheme.floatingCard(borderRadius: 26.0),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),

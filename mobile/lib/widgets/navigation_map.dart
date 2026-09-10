@@ -45,7 +45,7 @@ class _NavigationMapState extends State<NavigationMap> {
     // flutter_map rotates the map clockwise, so heading-up uses -heading.
     // This is a 2D street map; perspective tilt is not supported.
     _mapController.moveAndRotate(
-      LatLng(output.latitude, output.longitude),
+      widget.state.displayPosition,
       widget.state.navigationActive ? 17.5 : 15.0,
       widget.state.navigationActive ? -output.heading : 0.0,
     );
@@ -60,7 +60,7 @@ class _NavigationMapState extends State<NavigationMap> {
   @override
   Widget build(BuildContext context) {
     final output = widget.state.navigationOutput;
-    final curPos = LatLng(output.latitude, output.longitude);
+    final curPos = widget.state.displayPosition;
     final isDeadReckoning =
         output.navigationMode == NavigationMode.deadReckoning;
 

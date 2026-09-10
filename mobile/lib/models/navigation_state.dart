@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart' hide NavigationMode;
 import 'package:latlong2/latlong.dart';
 import 'package:mobile/models/navigation_output.dart';
+import 'package:mobile/navigation/integration/navigation_pipeline_result.dart';
 import 'package:mobile/navigation/map_matching/map_matcher.dart';
 import 'package:mobile/navigation/map_matching/map_match_result.dart';
 
@@ -28,6 +29,21 @@ class NavWaypoint {
 /// Holds trip metrics, real Pune coordinates, vehicle heading, speed,
 /// ETA calculations, GNSS status, and Dead Reckoning breadcrumb history.
 class NavigationState {
+  NavigationPipelineResult? _pipelineResult;
+
+  LatLng get displayPosition =>
+      _pipelineResult?.displayPosition ?? currentPosition;
+
+  void applyPipelineResult(NavigationPipelineResult result) {
+    _pipelineResult = result;
+    heading = result.raw.heading;
+    if (result.raw.navigationMode == NavigationMode.deadReckoning) {
+      deadReckoningBreadcrumbs.add(
+        LatLng(result.raw.latitude, result.raw.longitude),
+      );
+    }
+  }
+
   static final _mapMatcher = MapMatcher();
 
   /// Optional route projection; never feeds back into raw simulation or output.
@@ -77,6 +93,7 @@ class NavigationState {
   ///   GNSS_INS + AVAILABLE
   ///   DEAD_RECKONING + UNAVAILABLE
   NavigationOutput get navigationOutput {
+    if (_pipelineResult != null) return _pipelineResult!.raw;
     final pos = currentPosition;
     return NavigationOutput(
       timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -158,6 +175,10 @@ class NavigationState {
 
   /// Get current interpolated vehicle coordinates
   LatLng get currentPosition {
+    if (_pipelineResult != null) {
+      final raw = _pipelineResult!.raw;
+      return LatLng(raw.latitude, raw.longitude);
+    }
     if (routeWaypoints.isEmpty) return const LatLng(18.5204, 73.8415);
     if (currentWaypointIndex >= routeWaypoints.length - 1) {
       return routeWaypoints.last.position;
@@ -224,6 +245,7 @@ class NavigationState {
 
   /// Start navigation simulation
   void start() {
+    _pipelineResult = null;
     navigationActive = true;
     simulatedGnssAvailable = true;
     _speedMps = 38.0 / 3.6; // ~10.56 m/s (displays as ~38 km/h)
@@ -236,6 +258,7 @@ class NavigationState {
 
   /// Stop navigation simulation and reset
   void stop() {
+    _pipelineResult = null;
     navigationActive = false;
     simulatedGnssAvailable = true;
     _speedMps = 0.0;
