@@ -18,6 +18,27 @@ To enable Google Maps road tiles on iOS:
 4. Restrict the API key in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) to the iOS application bundle identifier (`com.navsync.app`).
 5. Ensure the **Maps SDK for iOS** is enabled and billing is activated in your Google Cloud project.
 
+## Sensor & Location Dependencies (Issue #11)
+
+NavSync uses two Flutter plugins for sensor collection:
+
+| Package | Purpose |
+|---|---|
+| `sensors_plus` | Accelerometer, gyroscope, and magnetometer event streams |
+| `geolocator` | Foreground GNSS/location data and permission management |
+
+### Platform Permissions
+
+**iOS** (`ios/Runner/Info.plist`):
+- `NSLocationWhenInUseUsageDescription` — foreground location for navigation
+- `NSMotionUsageDescription` — motion sensors for dead reckoning
+
+**Android** (`android/app/src/main/AndroidManifest.xml`):
+- `ACCESS_FINE_LOCATION` — high-accuracy GPS
+- `ACCESS_COARSE_LOCATION` — network-based location fallback
+
+Background location collection is **not enabled**. Real sensor collection will be implemented in Issue #11C. All internal sensor units follow [integration/interfaces/README.md](../integration/interfaces/README.md) §10.
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.
