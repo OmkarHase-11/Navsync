@@ -97,6 +97,9 @@ class FakeSensorPlatformAdapter implements SensorPlatformAdapter {
   @override
   Stream<TimestampedVector3> get magnetometerStream => rawMagStream;
 
+  @override
+  Future<bool> openAppSettings() async => true;
+
   Future<void> dispose() async {
     await accelController.close();
     await gyroController.close();
@@ -193,6 +196,9 @@ class ControllableAdapter implements SensorPlatformAdapter {
     requestPermissionCalls++;
     return requestPermissionResult;
   }
+
+  @override
+  Future<bool> openAppSettings() async => true;
 
   Future<void> dispose() async {
     await accelController.close();

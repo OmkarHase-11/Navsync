@@ -45,6 +45,9 @@ class TestPlatformAdapter implements SensorPlatformAdapter {
   Future<LocationPermission> requestLocationPermission() async =>
       requestPermissionResult;
 
+  @override
+  Future<bool> openAppSettings() async => true;
+
   Future<void> dispose() async {
     await accelController.close();
     await gyroController.close();

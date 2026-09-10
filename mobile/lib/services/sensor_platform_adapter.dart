@@ -29,6 +29,9 @@ abstract class SensorPlatformAdapter {
 
   /// Stream of foreground GNSS position fixes.
   Stream<GnssReading> get gnssStream;
+
+  /// Opens the device app settings page.
+  Future<bool> openAppSettings();
 }
 
 /// Production implementation of [SensorPlatformAdapter] using `sensors_plus`
@@ -137,4 +140,7 @@ class DefaultSensorPlatformAdapter implements SensorPlatformAdapter {
           );
         });
   }
+
+  @override
+  Future<bool> openAppSettings() => Geolocator.openAppSettings();
 }

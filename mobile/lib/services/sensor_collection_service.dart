@@ -248,6 +248,9 @@ class SensorCollectionService {
     await _errorController.close();
   }
 
+  /// Opens device app settings for user-initiated permission updates.
+  Future<bool> openAppSettings() => _adapter.openAppSettings();
+
   void _updateGnssStatus(GnssAccessStatus status) {
     if (_isDisposed) return;
     _gnssStatus = status;

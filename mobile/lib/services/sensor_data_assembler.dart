@@ -185,10 +185,7 @@ class SensorDataAssembler {
       ),
     );
     _subscriptions.add(
-      collectionService.gnssStream.listen(
-        _onGnss,
-        cancelOnError: false,
-      ),
+      collectionService.gnssStream.listen(_onGnss, cancelOnError: false),
     );
     _subscriptions.add(
       collectionService.gnssStatusStream.listen(
