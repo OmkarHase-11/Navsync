@@ -303,7 +303,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. Full-Screen Google Maps Navigation View — MUST be first and fill entire screen
+          // 1. Full-Screen OpenStreetMap Navigation View — MUST be first and fill entire screen
           NavigationMap(
             state: _navState,
             isAutoTracking: _isAutoTracking,
