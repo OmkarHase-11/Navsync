@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart' hide NavigationMode;
+import 'package:mobile/controllers/sensor_runtime_controller.dart';
 import 'package:mobile/models/navigation_output.dart';
 import 'package:mobile/models/navigation_state.dart';
 import 'package:mobile/theme/navsync_theme.dart';
@@ -15,15 +16,18 @@ import 'package:mobile/widgets/navigation_map.dart';
 /// - Turn-by-turn guidance header card
 /// - Subtle, impressive AI Dead Reckoning alert and visual transition
 /// - Google Maps-familiar bottom navigation card with ETA, distance, and speed
-/// - Clean side drawer menu
+/// - Clean side drawer menu with Real Sensor Readiness status
 class NavigationScreen extends StatefulWidget {
-  const NavigationScreen({super.key});
+  final SensorRuntimeController? sensorController;
+
+  const NavigationScreen({super.key, this.sensorController});
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
 }
 
 class _InAppNotification {
+  final Key key;
   final bool isGnssLost;
   final String title;
   final String message;
@@ -34,6 +38,7 @@ class _InAppNotification {
   final Color borderColor;
 
   const _InAppNotification({
+    required this.key,
     required this.isGnssLost,
     required this.title,
     required this.message,
@@ -45,21 +50,89 @@ class _InAppNotification {
   });
 }
 
-class _NavigationScreenState extends State<NavigationScreen> {
+class _NavigationScreenState extends State<NavigationScreen>
+    with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final NavigationState _navState = NavigationState();
+  late final SensorRuntimeController _sensorController;
+  SensorPipelineStatus? _lastNotifiedPipelineStatus;
+
+  _InAppNotification? _activeNotification;
 
   Timer? _simulationTimer;
   Timer? _notificationTimer;
-  _InAppNotification? _activeNotification;
+
   bool _isAutoTracking = true;
   int _statusAnimationEpoch = 0;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _sensorController = widget.sensorController ?? SensorRuntimeController();
+    _sensorController.addListener(_onSensorPipelineStatusChanged);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _sensorController.removeListener(_onSensorPipelineStatusChanged);
+    if (widget.sensorController == null) {
+      _sensorController.dispose();
+    }
     _simulationTimer?.cancel();
     _notificationTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      if (_navState.navigationActive) {
+        _sensorController.pause();
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_navState.navigationActive) {
+        _sensorController.resume();
+      }
+    }
+  }
+
+  void _showNotificationBanner({
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color backgroundColor,
+    required Color textColor,
+    required Color iconColor,
+    required Color borderColor,
+    Duration duration = const Duration(milliseconds: 2200),
+    bool isGnssLost = false,
+  }) {
+    _notificationTimer?.cancel();
+    setState(() {
+      _activeNotification = _InAppNotification(
+        key: ValueKey('sensor_notif_$title'),
+        isGnssLost: isGnssLost,
+        title: title,
+        message: message,
+        icon: icon,
+        backgroundColor: backgroundColor,
+        textColor: textColor,
+        iconColor: iconColor,
+        borderColor: borderColor,
+      );
+    });
+
+    _notificationTimer = Timer(duration, () {
+      if (!mounted) return;
+      setState(() {
+        _activeNotification = null;
+      });
+    });
   }
 
   void _showInAppNotification(bool isGnssLost) {
@@ -67,7 +140,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
     _statusAnimationEpoch++;
     setState(() {
       _activeNotification = isGnssLost
-          ? const _InAppNotification(
+          ? _InAppNotification(
+              key: ValueKey('notif_$_statusAnimationEpoch'),
               isGnssLost: true,
               title: 'GNSS signal lost',
               message: 'NavSync IDR is continuing navigation',
@@ -77,7 +151,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
               iconColor: NavSyncTheme.idrBlue,
               borderColor: NavSyncTheme.idrNotificationBorder,
             )
-          : const _InAppNotification(
+          : _InAppNotification(
+              key: ValueKey('notif_$_statusAnimationEpoch'),
               isGnssLost: false,
               title: 'GNSS restored',
               message: 'GNSS + INS navigation resumed',
@@ -101,11 +176,65 @@ class _NavigationScreenState extends State<NavigationScreen> {
     });
   }
 
+  void _onSensorPipelineStatusChanged() {
+    final status = _sensorController.pipelineStatus;
+    if (status == _lastNotifiedPipelineStatus) return;
+    _lastNotifiedPipelineStatus = status;
+
+    if (status == SensorPipelineStatus.permissionDenied) {
+      _showNotificationBanner(
+        title: 'Location permission denied',
+        message: 'IMU remains active for Dead Reckoning',
+        icon: Icons.location_off_rounded,
+        backgroundColor: NavSyncTheme.idrNotificationBg,
+        textColor: NavSyncTheme.idrNotificationText,
+        iconColor: NavSyncTheme.warning,
+        borderColor: NavSyncTheme.idrNotificationBorder,
+        duration: const Duration(milliseconds: 2800),
+      );
+    } else if (status == SensorPipelineStatus.locationServicesDisabled) {
+      _showNotificationBanner(
+        title: 'Location Services disabled',
+        message: 'IMU remains active for Dead Reckoning',
+        icon: Icons.location_disabled_rounded,
+        backgroundColor: NavSyncTheme.idrNotificationBg,
+        textColor: NavSyncTheme.idrNotificationText,
+        iconColor: NavSyncTheme.warning,
+        borderColor: NavSyncTheme.idrNotificationBorder,
+        duration: const Duration(milliseconds: 2800),
+      );
+    } else if (status == SensorPipelineStatus.error) {
+      _showNotificationBanner(
+        title: 'Sensor collection error',
+        message:
+            _sensorController.lastErrorMessage ?? 'Recoverable sensor error',
+        icon: Icons.error_outline_rounded,
+        backgroundColor: const Color(0xFF2C1616),
+        textColor: const Color(0xFFFF8A80),
+        iconColor: const Color(0xFFFF5252),
+        borderColor: const Color(0xFF5A2222),
+        duration: const Duration(milliseconds: 2800),
+      );
+    }
+  }
+
   void _startNavigation() {
     setState(() {
       _navState.start();
       _isAutoTracking = true;
     });
+
+    _sensorController.start();
+    _showNotificationBanner(
+      title: 'Sensor collection started',
+      message: 'Foreground sensor pipeline active',
+      icon: Icons.sensors_rounded,
+      backgroundColor: NavSyncTheme.gnssNotificationBg,
+      textColor: NavSyncTheme.gnssNotificationText,
+      iconColor: NavSyncTheme.gnssGreen,
+      borderColor: NavSyncTheme.gnssNotificationBorder,
+      duration: const Duration(milliseconds: 2000),
+    );
 
     _simulationTimer?.cancel();
     // 20Hz update loop (50ms) for smooth vehicle progress along roads
@@ -127,11 +256,24 @@ class _NavigationScreenState extends State<NavigationScreen> {
     _simulationTimer = null;
     _notificationTimer?.cancel();
     _statusAnimationEpoch++;
+    _sensorController.stop();
+
     setState(() {
       _navState.stop();
       _activeNotification = null;
       _isAutoTracking = true;
     });
+
+    _showNotificationBanner(
+      title: 'Sensor collection stopped',
+      message: 'Foreground sensor pipeline stopped',
+      icon: Icons.sensors_off_rounded,
+      backgroundColor: NavSyncTheme.surfaceElevated,
+      textColor: NavSyncTheme.secondaryText,
+      iconColor: NavSyncTheme.tertiaryText,
+      borderColor: NavSyncTheme.cardBorder,
+      duration: const Duration(milliseconds: 1800),
+    );
   }
 
   void _toggleGnssFailure() {
@@ -154,7 +296,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: NavSyncTheme.background,
-      drawer: NavSyncDrawer(navigationOutput: navOutput),
+      drawer: NavSyncDrawer(
+        navigationOutput: navOutput,
+        sensorController: _sensorController,
+      ),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -638,7 +783,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       child: _activeNotification == null
           ? const SizedBox.shrink(key: ValueKey('empty_notif'))
           : Container(
-              key: ValueKey('notif_$_statusAnimationEpoch'),
+              key: _activeNotification!.key,
               margin: const EdgeInsets.only(top: 8),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(

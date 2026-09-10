@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart' hide NavigationMode;
+import 'package:mobile/controllers/sensor_runtime_controller.dart';
 import 'package:mobile/models/navigation_output.dart';
 import 'package:mobile/theme/navsync_theme.dart';
 
@@ -9,10 +10,12 @@ import 'package:mobile/theme/navsync_theme.dart';
 /// - Primary navigation destinations grouped in a rounded surface
 /// - Compact NavSync AI-IDR technology card with subtle blue styling
 /// - Live system-status card reflecting canonical NavigationOutput state
+/// - Real hardware sensor readiness card
 /// - Secondary navigation group (Settings, About)
 /// - Integrated footer without excessive empty space
 class NavSyncDrawer extends StatelessWidget {
   final NavigationOutput? navigationOutput;
+  final SensorRuntimeController? sensorController;
   final VoidCallback? onSelectHome;
   final VoidCallback? onSelectProfile;
   final VoidCallback? onSelectNavigation;
@@ -25,6 +28,7 @@ class NavSyncDrawer extends StatelessWidget {
   const NavSyncDrawer({
     super.key,
     this.navigationOutput,
+    this.sensorController,
     this.onSelectHome,
     this.onSelectProfile,
     this.onSelectNavigation,
@@ -120,7 +124,11 @@ class NavSyncDrawer extends StatelessWidget {
               _buildSystemStatusCard(isDeadReckoning),
               const SizedBox(height: 12),
 
-              // E. Secondary Navigation Group in rounded surface
+              // E. Real Sensor Readiness Card
+              _buildSensorReadinessCard(context),
+              const SizedBox(height: 12),
+
+              // F. Secondary Navigation Group in rounded surface
               Material(
                 color: NavSyncTheme.surface,
                 borderRadius: BorderRadius.circular(18),
@@ -391,6 +399,199 @@ class NavSyncDrawer extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSensorReadinessCard(BuildContext context) {
+    if (sensorController == null) {
+      return _buildSensorReadinessView(
+        status: SensorPipelineStatus.idle,
+        snapshotCount: 0,
+      );
+    }
+
+    return AnimatedBuilder(
+      animation: sensorController!,
+      builder: (context, _) {
+        return _buildSensorReadinessView(
+          status: sensorController!.pipelineStatus,
+          snapshotCount: sensorController!.totalSnapshotCount,
+          lastError: sensorController!.lastErrorMessage,
+          onOpenSettings:
+              sensorController!.pipelineStatus ==
+                  SensorPipelineStatus.permissionDeniedForever
+              ? () => sensorController!.openAppSettings()
+              : null,
+        );
+      },
+    );
+  }
+
+  Widget _buildSensorReadinessView({
+    required SensorPipelineStatus status,
+    required int snapshotCount,
+    String? lastError,
+    VoidCallback? onOpenSettings,
+  }) {
+    final (
+      String label,
+      String detail,
+      Color color,
+      IconData icon,
+    ) = switch (status) {
+      SensorPipelineStatus.idle || SensorPipelineStatus.stopped => (
+        'Sensors off',
+        'Foreground collection stopped',
+        NavSyncTheme.secondaryText,
+        Icons.sensors_off_rounded,
+      ),
+      SensorPipelineStatus.starting => (
+        'Starting sensors…',
+        'Awaiting hardware data',
+        NavSyncTheme.idrBlueLight,
+        Icons.sensors_rounded,
+      ),
+      SensorPipelineStatus.collecting => (
+        'IMU + GNSS active',
+        snapshotCount > 0
+            ? '$snapshotCount snapshots • 20 Hz'
+            : 'Active navigation feed',
+        NavSyncTheme.gnssGreen,
+        Icons.sensors_rounded,
+      ),
+      SensorPipelineStatus.collectingWithoutGnss => (
+        'IMU active · Waiting for GNSS',
+        snapshotCount > 0
+            ? '$snapshotCount snapshots • IMU only'
+            : 'Inertial collection active',
+        NavSyncTheme.idrBlueLight,
+        Icons.sensors_rounded,
+      ),
+      SensorPipelineStatus.permissionDenied => (
+        'Location permission denied',
+        'IMU remains active for IDR',
+        NavSyncTheme.warning,
+        Icons.location_off_rounded,
+      ),
+      SensorPipelineStatus.permissionDeniedForever => (
+        'Enable Location in Settings',
+        'Permission permanently denied',
+        NavSyncTheme.warning,
+        Icons.settings_suggest_rounded,
+      ),
+      SensorPipelineStatus.locationServicesDisabled => (
+        'Location Services disabled',
+        'Enable device GPS for fixes',
+        NavSyncTheme.warning,
+        Icons.location_disabled_rounded,
+      ),
+      SensorPipelineStatus.sensorUnavailable => (
+        'Sensor unavailable',
+        'Hardware sensor missing',
+        NavSyncTheme.warning,
+        Icons.error_outline_rounded,
+      ),
+      SensorPipelineStatus.error => (
+        'Sensor error',
+        lastError ?? 'Hardware acquisition error',
+        const Color(0xFFFF5252),
+        Icons.warning_amber_rounded,
+      ),
+      SensorPipelineStatus.paused => (
+        'Sensors paused',
+        'App in background',
+        NavSyncTheme.secondaryText,
+        Icons.pause_circle_outline_rounded,
+      ),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: NavSyncTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: status == SensorPipelineStatus.collecting
+              ? NavSyncTheme.gnssGreen.withValues(alpha: 0.3)
+              : (status == SensorPipelineStatus.error
+                    ? const Color(0xFF5A2222)
+                    : NavSyncTheme.cardBorder),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'REAL HARDWARE SENSORS',
+                  style: NavSyncTheme.label.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 10,
+                    letterSpacing: 0.4,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w700,
+              fontSize: 12.5,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            detail,
+            style: const TextStyle(
+              color: NavSyncTheme.secondaryText,
+              fontSize: 10.5,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (onOpenSettings != null) ...[
+            const SizedBox(height: 6),
+            InkWell(
+              onTap: onOpenSettings,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 2.0),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Open Settings',
+                      style: TextStyle(
+                        color: NavSyncTheme.accent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    SizedBox(width: 4),
+                    Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      size: 10,
+                      color: NavSyncTheme.accent,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
