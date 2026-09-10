@@ -1,0 +1,866 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart' hide NavigationMode;
+import 'package:mobile/models/navigation_output.dart';
+import 'package:mobile/models/navigation_state.dart';
+import 'package:mobile/theme/navsync_theme.dart';
+import 'package:mobile/widgets/navigation_drawer.dart';
+import 'package:mobile/widgets/navigation_map.dart';
+
+/// Main Consumer Navigation Screen
+///
+/// Features:
+/// - Full-screen Google Map as the centerpiece
+/// - Seamless transition from Destination Search to Active Navigation
+/// - Turn-by-turn guidance header card
+/// - Subtle, impressive AI Dead Reckoning alert and visual transition
+/// - Google Maps-familiar bottom navigation card with ETA, distance, and speed
+/// - Clean side drawer menu
+class NavigationScreen extends StatefulWidget {
+  const NavigationScreen({super.key});
+
+  @override
+  State<NavigationScreen> createState() => _NavigationScreenState();
+}
+
+class _InAppNotification {
+  final bool isGnssLost;
+  final String title;
+  final String message;
+  final IconData icon;
+  final Color backgroundColor;
+  final Color textColor;
+  final Color iconColor;
+  final Color borderColor;
+
+  const _InAppNotification({
+    required this.isGnssLost,
+    required this.title,
+    required this.message,
+    required this.icon,
+    required this.backgroundColor,
+    required this.textColor,
+    required this.iconColor,
+    required this.borderColor,
+  });
+}
+
+class _NavigationScreenState extends State<NavigationScreen> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final NavigationState _navState = NavigationState();
+
+  Timer? _simulationTimer;
+  Timer? _notificationTimer;
+  _InAppNotification? _activeNotification;
+  bool _isAutoTracking = true;
+  int _statusAnimationEpoch = 0;
+
+  @override
+  void dispose() {
+    _simulationTimer?.cancel();
+    _notificationTimer?.cancel();
+    super.dispose();
+  }
+
+  void _showInAppNotification(bool isGnssLost) {
+    _notificationTimer?.cancel();
+    _statusAnimationEpoch++;
+    setState(() {
+      _activeNotification = isGnssLost
+          ? const _InAppNotification(
+              isGnssLost: true,
+              title: 'GNSS signal lost',
+              message: 'NavSync IDR is continuing navigation',
+              icon: Icons.sensors_off_rounded,
+              backgroundColor: NavSyncTheme.idrNotificationBg,
+              textColor: NavSyncTheme.idrNotificationText,
+              iconColor: NavSyncTheme.idrBlue,
+              borderColor: NavSyncTheme.idrNotificationBorder,
+            )
+          : const _InAppNotification(
+              isGnssLost: false,
+              title: 'GNSS restored',
+              message: 'GNSS + INS navigation resumed',
+              icon: Icons.check_circle_rounded,
+              backgroundColor: NavSyncTheme.gnssNotificationBg,
+              textColor: NavSyncTheme.gnssNotificationText,
+              iconColor: NavSyncTheme.gnssGreen,
+              borderColor: NavSyncTheme.gnssNotificationBorder,
+            );
+    });
+
+    final duration = isGnssLost
+        ? const Duration(milliseconds: 2800)
+        : const Duration(milliseconds: 2200);
+
+    _notificationTimer = Timer(duration, () {
+      if (!mounted) return;
+      setState(() {
+        _activeNotification = null;
+      });
+    });
+  }
+
+  void _startNavigation() {
+    setState(() {
+      _navState.start();
+      _isAutoTracking = true;
+    });
+
+    _simulationTimer?.cancel();
+    // 20Hz update loop (50ms) for smooth vehicle progress along roads
+    _simulationTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if (!mounted) return;
+      final prevStatus = _navState.navigationOutput.gnssStatus;
+      setState(() {
+        _navState.stepSimulation(0.05);
+      });
+      final newStatus = _navState.navigationOutput.gnssStatus;
+      if (prevStatus != newStatus) {
+        _showInAppNotification(newStatus == GnssStatus.unavailable);
+      }
+    });
+  }
+
+  void _stopNavigation() {
+    _simulationTimer?.cancel();
+    _simulationTimer = null;
+    _notificationTimer?.cancel();
+    _statusAnimationEpoch++;
+    setState(() {
+      _navState.stop();
+      _activeNotification = null;
+      _isAutoTracking = true;
+    });
+  }
+
+  void _toggleGnssFailure() {
+    setState(() {
+      _navState.toggleManualGnss();
+    });
+
+    final isLost =
+        _navState.navigationOutput.gnssStatus == GnssStatus.unavailable;
+    _showInAppNotification(isLost);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNavActive = _navState.navigationActive;
+    final navOutput = _navState.navigationOutput;
+    final isDeadReckoning =
+        navOutput.navigationMode == NavigationMode.deadReckoning;
+
+    return Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: NavSyncTheme.background,
+      drawer: NavSyncDrawer(navigationOutput: navOutput),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // 1. Full-Screen Google Maps Navigation View — MUST be first and fill entire screen
+          NavigationMap(
+            state: _navState,
+            isAutoTracking: _isAutoTracking,
+            onRecenter: () {
+              setState(() => _isAutoTracking = true);
+            },
+            onUserPan: () {
+              if (_isAutoTracking) {
+                setState(() => _isAutoTracking = false);
+              }
+            },
+          ),
+
+          // 2. Dead Reckoning Ambient Aura Halo (Visual Wow Factor - IDR Blue)
+          if (isDeadReckoning && _isAutoTracking)
+            Center(
+              child: IgnorePointer(
+                child: Container(
+                  width: 90,
+                  height: 90,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: NavSyncTheme.idrBlue.withValues(alpha: 0.6),
+                      width: 2.0,
+                    ),
+                    color: NavSyncTheme.idrBlue.withValues(alpha: 0.08),
+                  ),
+                ),
+              ),
+            ),
+
+          // 3. Top Header Elements: Search Bar or Turn Guidance + Dedicated Status Pill + In-App Notification
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16.0,
+                  vertical: 8.0,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (isNavActive)
+                      _buildTurnGuidanceCard(isDeadReckoning)
+                    else
+                      _buildDestinationSearchBar(),
+
+                    const SizedBox(height: 8),
+
+                    // Compact Corner Navigation Status Chip (aligned to top-right)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: _buildNavigationStatusChip(navOutput),
+                    ),
+
+                    // Top Transient In-App Notification
+                    _buildTopInAppNotification(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // 4. Bottom Navigation Card (Persistent trip info or start controls)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 0,
+            child: SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 18),
+              child: isNavActive
+                  ? _buildActiveNavigationBottomCard()
+                  : _buildPreNavigationBottomCard(),
+            ),
+          ),
+
+          // 5. Floating Re-Center Button (Appears when user pans away)
+          if (!_isAutoTracking)
+            Positioned(
+              right: 16,
+              bottom: isNavActive ? 150 : 130,
+              child: FloatingActionButton.small(
+                heroTag: 'recenter_btn',
+                backgroundColor: NavSyncTheme.surfaceElevated,
+                foregroundColor: NavSyncTheme.primaryText,
+                elevation: 4,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: const BorderSide(color: NavSyncTheme.cardBorder),
+                ),
+                onPressed: () {
+                  setState(() => _isAutoTracking = true);
+                },
+                child: const Icon(
+                  Icons.my_location_rounded,
+                  size: 20,
+                  color: NavSyncTheme.accentLight,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ── Pre-Navigation Widgets ────────────────────────────────────────────────
+
+  Widget _buildDestinationSearchBar() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          decoration: NavSyncTheme.floatingCard(),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(
+                  Icons.menu_rounded,
+                  color: NavSyncTheme.primaryText,
+                ),
+                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              ),
+              Expanded(
+                child: Text(
+                  'Where do you want to go?',
+                  style: NavSyncTheme.headingMedium.copyWith(
+                    fontSize: 16,
+                    color: NavSyncTheme.secondaryText,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(
+                  Icons.search_rounded,
+                  color: NavSyncTheme.primaryText,
+                ),
+                onPressed: () {},
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        // Quick destination chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _buildQuickChip('Pune Central Station', Icons.train_rounded),
+              _buildQuickChip('FC Road Cafe', Icons.restaurant_rounded),
+              _buildQuickChip('Deccan Gymkhana', Icons.sports_tennis_rounded),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildQuickChip(String label, IconData icon) {
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: NavSyncTheme.surface.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: NavSyncTheme.cardBorder),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: NavSyncTheme.accentLight),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: NavSyncTheme.primaryText,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreNavigationBottomCard() {
+    return Container(
+      decoration: NavSyncTheme.floatingCard(
+        borderRadius: NavSyncTheme.radiusMajorCard,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _navState.destinationName,
+                  style: NavSyncTheme.headingMedium.copyWith(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    children: [
+                      Text(
+                        '${_navState.remainingMinutes} min',
+                        style: const TextStyle(
+                          color: NavSyncTheme.maneuverGreen,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        '•',
+                        style: TextStyle(color: NavSyncTheme.secondaryText),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${_navState.totalTripDistanceKm} km',
+                        style: NavSyncTheme.tripSubtext.copyWith(fontSize: 13),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        '•',
+                        style: TextStyle(color: NavSyncTheme.secondaryText),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'Fast Route',
+                        style: TextStyle(
+                          color: NavSyncTheme.secondaryText,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: NavSyncTheme.accent,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(NavSyncTheme.radiusButton),
+              ),
+              elevation: 2,
+            ),
+            onPressed: _startNavigation,
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.navigation_rounded, size: 16),
+                SizedBox(width: 6),
+                Text(
+                  'START',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Active Navigation Widgets ─────────────────────────────────────────────
+
+  Widget _buildTurnGuidanceCard(bool isDeadReckoning) {
+    final guidance = _navState.currentGuidance;
+    final distMeters = _navState.distanceToNextTurnMeters;
+
+    return Container(
+      decoration: NavSyncTheme.guidanceCard(isDeadReckoning: isDeadReckoning),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Maneuver Icon Box
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: isDeadReckoning
+                  ? NavSyncTheme.idrBlue.withValues(alpha: 0.15)
+                  : NavSyncTheme.surfaceElevated,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isDeadReckoning
+                    ? NavSyncTheme.idrBlue
+                    : NavSyncTheme.cardBorder,
+                width: 1.0,
+              ),
+            ),
+            child: Icon(
+              guidance.maneuverIcon,
+              size: 26,
+              color: isDeadReckoning
+                  ? NavSyncTheme.idrBlueLight
+                  : NavSyncTheme.maneuverGreen,
+            ),
+          ),
+          const SizedBox(width: 14),
+
+          // Maneuver text
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$distMeters m',
+                  style: NavSyncTheme.maneuverDistance.copyWith(
+                    color: isDeadReckoning
+                        ? NavSyncTheme.idrBlueLight
+                        : NavSyncTheme.maneuverGreen,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  guidance.instruction,
+                  style: NavSyncTheme.maneuverInstruction.copyWith(
+                    fontSize: 17,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+
+          // Menu button
+          IconButton(
+            icon: const Icon(
+              Icons.more_vert_rounded,
+              color: NavSyncTheme.secondaryText,
+            ),
+            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compact top-right corner status chip sized to content
+  Widget _buildNavigationStatusChip(NavigationOutput output) {
+    final isDeadReckoning =
+        output.navigationMode == NavigationMode.deadReckoning;
+
+    return Semantics(
+      label: isDeadReckoning
+          ? 'IDR active. Tap to simulate GNSS restoration'
+          : 'GNSS active. Tap to simulate GNSS signal loss',
+      button: true,
+      child: GestureDetector(
+        key: const ValueKey('navigation_status_pill'),
+        onTap: _toggleGnssFailure,
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+          constraints: const BoxConstraints(minHeight: 44),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+          decoration: BoxDecoration(
+            color: isDeadReckoning
+                ? NavSyncTheme.idrCardBg.withValues(alpha: 0.95)
+                : NavSyncTheme.surface.withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: isDeadReckoning
+                  ? NavSyncTheme.idrBorder
+                  : NavSyncTheme.gnssGreen.withValues(alpha: 0.4),
+              width: 1.0,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Status Icon / Glowing Dot
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 250),
+                child: isDeadReckoning
+                    ? Icon(
+                        Icons.radar_rounded,
+                        key: ValueKey('dr_dot_$_statusAnimationEpoch'),
+                        size: 15,
+                        color: NavSyncTheme.idrBlueLight,
+                      )
+                    : Container(
+                        key: ValueKey('gnss_dot_$_statusAnimationEpoch'),
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: NavSyncTheme.gnssGreen,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: NavSyncTheme.gnssGreenGlow,
+                              blurRadius: 5,
+                              spreadRadius: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+              const SizedBox(width: 8),
+
+              // One-line status label (GNSS ACTIVE / IDR ACTIVE)
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: Text(
+                  isDeadReckoning ? 'IDR ACTIVE' : 'GNSS ACTIVE',
+                  key: ValueKey('status_labels_$_statusAnimationEpoch'),
+                  style: TextStyle(
+                    color: isDeadReckoning
+                        ? NavSyncTheme.idrBlueLight
+                        : NavSyncTheme.gnssGreen,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 12,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Transient In-Page Top Notification (replaces bottom SnackBar)
+  Widget _buildTopInAppNotification() {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      transitionBuilder: (child, animation) {
+        return FadeTransition(
+          opacity: animation,
+          child: SizeTransition(
+            sizeFactor: animation,
+            alignment: Alignment.topCenter,
+            child: child,
+          ),
+        );
+      },
+      child: _activeNotification == null
+          ? const SizedBox.shrink(key: ValueKey('empty_notif'))
+          : Container(
+              key: ValueKey('notif_$_statusAnimationEpoch'),
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _activeNotification!.backgroundColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _activeNotification!.borderColor,
+                  width: 1.0,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _activeNotification!.icon,
+                    color: _activeNotification!.iconColor,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _activeNotification!.title,
+                          style: TextStyle(
+                            color: _activeNotification!.textColor,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          _activeNotification!.message,
+                          style: TextStyle(
+                            color: _activeNotification!.textColor.withValues(
+                              alpha: 0.85,
+                            ),
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      minHeight: 24,
+                    ),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: _activeNotification!.textColor.withValues(
+                        alpha: 0.6,
+                      ),
+                    ),
+                    onPressed: () {
+                      _notificationTimer?.cancel();
+                      setState(() => _activeNotification = null);
+                    },
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  /// Compact, refined Active Navigation Bottom Card
+  Widget _buildActiveNavigationBottomCard() {
+    return Container(
+      decoration: NavSyncTheme.floatingCard(borderRadius: 26.0),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // 1. Left Two-Line ETA Summary Column (Expanded)
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Top line: Arrival time (calm green) + ETA label
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Text(
+                        _navState.formattedEta,
+                        style: const TextStyle(
+                          color: NavSyncTheme.maneuverGreen,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: NavSyncTheme.maneuverGreen.withValues(
+                            alpha: 0.15,
+                          ),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'ETA',
+                          style: TextStyle(
+                            color: NavSyncTheme.maneuverGreen,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 3),
+
+                // Bottom line: Duration & remaining distance
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${_navState.remainingMinutes} min  •  ${_navState.remainingDistanceKm.toStringAsFixed(1)} km remaining',
+                    style: const TextStyle(
+                      color: NavSyncTheme.secondaryText,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          // 2. Refined Compact Speed Tile (rounded square)
+          Container(
+            width: 58,
+            height: 58,
+            decoration: BoxDecoration(
+              color: NavSyncTheme.surfaceElevated,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: NavSyncTheme.cardBorder),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _navState.navigationOutput.speedKmh.toStringAsFixed(0),
+                  style: const TextStyle(
+                    color: NavSyncTheme.primaryText,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w800,
+                    height: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'km/h',
+                  style: TextStyle(
+                    color: NavSyncTheme.secondaryText,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          // 3. Destructive Circular Stop Control
+          Semantics(
+            label: 'Stop navigation',
+            button: true,
+            child: Tooltip(
+              message: 'Stop navigation',
+              child: InkWell(
+                key: const ValueKey('stop_navigation_button'),
+                onTap: _stopNavigation,
+                borderRadius: BorderRadius.circular(26),
+                child: Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2C1616),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF5A2222)),
+                  ),
+                  child: const Center(
+                    child: Icon(
+                      Icons.close_rounded,
+                      color: Color(0xFFFF5252),
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

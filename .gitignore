@@ -3,3 +3,7 @@
 
 # Local evaluation reports and per-window predictions
 evaluation/results/
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
